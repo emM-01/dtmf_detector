@@ -137,7 +137,7 @@ class DTMFApp(tk.Tk):
         logo.pack(fill=tk.X)
         tk.Label(logo, text="DTMF", font=("Segoe UI", 22, "bold"),
                  bg=SIDEBAR, fg=ACCENT).pack()
-        tk.Label(logo, text="Analyzer", font=("Segoe UI", 10),
+        tk.Label(logo, text="Detector de Tonos", font=("Segoe UI", 10),
                  bg=SIDEBAR, fg=TEXT_DIM).pack()
 
         # Separador
@@ -501,6 +501,19 @@ class DTMFApp(tk.Tk):
                                          wraplength=220, justify="left")
         self.lbl_mic_sequence.pack(anchor="w", pady=(8, 0))
 
+        # Botón — mandar al análisis
+        self.btn_analizar_mic = tk.Button(
+            seq_card,
+            text="📊  Analizar en gráficas",
+            font=("Segoe UI", 9, "bold"),
+            bg=ACCENT, fg=BG,
+            relief="flat", cursor="hand2",
+            padx=10, pady=6,
+            state=tk.DISABLED,
+            command=self._analizar_secuencia_mic,
+        )
+        self.btn_analizar_mic.pack(anchor="w", pady=(10, 0))
+
         # Controles de sensibilidad
         sens_card = tk.Frame(parent, bg=CARD, padx=16, pady=12,
                              highlightbackground=BORDER, highlightthickness=1)
@@ -698,10 +711,10 @@ class DTMFApp(tk.Tk):
         K         = N // 2
         freqs_dft = np.arange(K) * SR / N
         X_mag     = np.zeros(K)
-        n_arr     = np.arange(N)
         for k in range(K):
+            n_arr      = np.arange(N)
             real_part  = np.sum(x * np.cos(2*np.pi*k*n_arr/N))
-            imag_part  = np.sum(x * np.sin(2*np.pi*k*n_arr/N))   # e^{-j2πkn/N} = cos - j·sin  →  |X[k]| = sqrt(real²+imag²)
+            imag_part  = np.sum(x * np.sin(2*np.pi*k*n_arr/N))
             X_mag[k]   = np.sqrt(real_part**2 + imag_part**2) / N
 
         # ── FFT manual (Cooley-Tukey) para comparar ──
@@ -768,14 +781,10 @@ class DTMFApp(tk.Tk):
         ax3.set_ylim(0, X_fft[mask_fft].max() * 1.3)
         ax3.grid(True, alpha=0.3)
 
-        # Verificar que son iguales numéricamente:
-        # La DFT manual cubre K bins en [0, SR/N, ..., (K-1)*SR/N].
-        # La FFT con zero-pad tiene más bins; buscamos los K índices correspondientes.
-        fft_indices = np.array([
-            int(np.round(fk * len(xpad) / SR)) for fk in freqs_dft
-        ], dtype=int)
-        fft_indices = np.clip(fft_indices, 0, len(X_fft) - 1)
-        err = float(np.max(np.abs(X_mag - X_fft[fft_indices])))
+        # Verificar que son iguales numéricamente
+        err = float(np.max(np.abs(
+            X_mag - X_fft[np.round(f_fft[:K]).astype(int) < SR//2 + 1][:K]
+        ))) if len(X_fft) >= K else float('nan')
 
         self._teoria_text_var.set(
             f"La DFT se define como:  X[k] = Σ x[n]·exp(−j2πkn/N)  para k = 0, 1, …, N−1\n"
@@ -1017,7 +1026,10 @@ class DTMFApp(tk.Tk):
             if digit != self._last_digit or (now - self._last_digit_t) > self._digit_cooldown:
                 self._mic_digits.append(digit)
                 self._last_digit, self._last_digit_t = digit, now
-                self.lbl_mic_sequence.config(text=''.join(self._mic_digits))
+                seq = ''.join(self._mic_digits)
+                self.lbl_mic_sequence.config(text=seq)
+                # Habilitar botón de análisis
+                self.btn_analizar_mic.config(state=tk.NORMAL)
             # iluminar tecla en teclado DTMF del panel archivo
             self._highlight_dtmf_key(digit)
         else:
@@ -1097,13 +1109,31 @@ class DTMFApp(tk.Tk):
         ax2.set_xlim(600, 1800)
         self.canvas_mic.draw_idle()
 
+    def _analizar_secuencia_mic(self):
+        """Genera audio DTMF de la secuencia capturada y lo manda al análisis."""
+        seq = ''.join(self._mic_digits)
+        if not seq:
+            return
+
+        # Generar la señal DTMF sintética de la secuencia capturada
+        samples = generate_dtmf_sequence(
+            seq, tone_ms=300, silence_ms=100, sample_rate=MIC_SR)
+
+        self.samples     = samples
+        self.sample_rate = MIC_SR
+        self.status_var.set(f"Desde micrófono: '{seq}'  •  {len(samples)/MIC_SR:.1f} s")
+
+        # Ir a la vista de análisis y procesar
+        self._switch_view("file")
+        self._analyze_and_plot()
+
     def _clear_mic_sequence(self):
         self._mic_digits.clear()
         self._last_digit = None
         self.lbl_mic_sequence.config(text="")
         self.lbl_live_digit.config(text="—", fg=GREEN)
         self.lbl_live_freq.config(text="")
-        # Resetear teclado
+        self.btn_analizar_mic.config(state=tk.DISABLED)
         for k, (cell, lbl, color) in self._dtmf_key_labels.items():
             cell.config(bg=CARD2, highlightbackground=BORDER)
             lbl.config(bg=CARD2, fg=TEXT_DIM)
